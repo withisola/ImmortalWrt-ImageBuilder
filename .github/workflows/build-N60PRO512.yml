@@ -74,12 +74,12 @@ jobs:
       - name: Rename firmware
         run: |
           cd bin/targets/mediatek/filogic
-          SRC=$(ls *n60-pro*squashfs-sysupgrade.bin 2>/dev/null | head -1)
+          SRC=$(ls *n60-pro*squashfs-sysupgrade.itb 2>/dev/null | head -1)
           if [ -z "$SRC" ]; then
             echo "未找到 sysupgrade 文件"; exit 1
           fi
           DATE=$(date +%Y%m%d)
-          NEW="immortalwrt-25.12-${DATE}-netcore_n60-pro-512M-squashfs-sysupgrade.bin"
+          NEW="immortalwrt-25.12-${DATE}-netcore_n60-pro-512M-squashfs-sysupgrade.itb"
           mv "$SRC" "$NEW"
           echo "FIRMWARE=$NEW" >> $GITHUB_ENV
 
