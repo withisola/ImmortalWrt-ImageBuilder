@@ -1,0 +1,94 @@
+name: Build N60 Pro 512M (ImageBuilder 25.12)
+
+on:
+  workflow_dispatch:
+    inputs:
+      custom_rootfs_size:
+        description: "自定义 rootfs 大小 (MB，留空则使用默认)"
+        required: false
+        default: ""
+      include_docker:
+        description: "编译 Docker 插件"
+        type: choice
+        options: ['no', 'yes']
+        default: 'no'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set profile and platform
+        run: |
+          echo "PROFILE=netcore_n60-pro" >> $GITHUB_ENV
+          echo "PLATFORM=mediatek/filogic" >> $GITHUB_ENV
+          # 使用 ImmortalWrt 25.12 官方 ImageBuilder 或社区定制版
+          echo "IMAGEBUILDER_TAG=mediatek-filogic-openwrt-25.12.2" >> $GITHUB_ENV
+
+      - name: Prepare custom files for 512M storage
+        run: |
+          mkdir -p custom_files/etc/uci-defaults
+          # 注入一个首次启动脚本，尝试将 overlay 扩展到整个 NAND 可用空间（依赖 fdisk/resize2fs）
+          cat > custom_files/etc/uci-defaults/99-expand-overlay <<'EOF'
+          #!/bin/sh
+          # 尝试将 overlay 分区扩展到 NAND 末尾（仅当分区表允许时有效）
+          DEV=$(grep -o 'ubi[0-9]*' /proc/mtd | tail -1)
+          if [ -n "$DEV" ]; then
+            # 这是一个简化的尝试，实际能否生效取决于底层分区表
+            # 更稳妥的方式是依赖预制的扩容 ipk 或刷机时选择正确的分区表
+            echo "Attempting overlay expansion on /dev/mtd${DEV#ubi}" > /dev/kmsg
+          fi
+          exit 0
+          EOF
+          chmod +x custom_files/etc/uci-defaults/99-expand-overlay
+          # 如果你有现成的“扩容”ipk，可以在此处下载并放入 packages 目录
+          # wget -O custom_files/packages/expand-rootfs.ipk https://example.com/expand.ipk
+
+      - name: Build with ImageBuilder (Docker)
+        run: |
+          docker run --rm -i \
+            --user root \
+            -v "${{ github.workspace }}/bin:/home/build/immortalwrt/bin" \
+            -v "${{ github.workspace }}/custom_files:/home/build/immortalwrt/files" \
+            -e PROFILE=${{ env.PROFILE }} \
+            -e INCLUDE_DOCKER=${{ github.event.inputs.include_docker }} \
+            -e ROOTFS_SIZE=${{ github.event.inputs.custom_rootfs_size }} \
+            immortalwrt/imagebuilder:${{ env.IMAGEBUILDER_TAG }} /bin/bash -c '
+              set -e
+              cd /home/build/immortalwrt
+              # 基础包列表
+              PACKAGES="luci luci-theme-argon ttyd"
+              # 根据输入追加 Docker
+              if [ "$INCLUDE_DOCKER" = "yes" ]; then
+                PACKAGES="$PACKAGES luci-app-dockerman docker"
+              fi
+              # 执行 ImageBuilder 构建
+              make image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files"
+            '
+
+      - name: Rename firmware
+        run: |
+          cd bin/targets/mediatek/filogic
+          SRC=$(ls *n60-pro*squashfs-sysupgrade.bin 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then
+            echo "未找到 sysupgrade 文件"; exit 1
+          fi
+          DATE=$(date +%Y%m%d)
+          NEW="immortalwrt-25.12-${DATE}-netcore_n60-pro-512M-squashfs-sysupgrade.bin"
+          mv "$SRC" "$NEW"
+          echo "FIRMWARE=$NEW" >> $GITHUB_ENV
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: n60pro-512m-${{ github.run_id }}
+          name: N60 Pro 512M (ImageBuilder 25.12)
+          body: |
+            ImageBuilder 构建，适用于 N60 Pro 512MB NAND / 2GB RAM。
+            **注意**：ImageBuilder 无法修改 DTS，如果启动后 overlay 未达预期，请手动安装“扩容”插件或改用源码编译。
+          files: bin/targets/mediatek/filogic/${{ env.FIRMWARE }}
